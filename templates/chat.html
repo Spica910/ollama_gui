@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLaMA Chat</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f7f7f8;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+        }
+
+        /* 대화창 박스 */
+        .chat-container {
+            flex: 1;
+            padding: 20px;
+            overflow-y: auto;
+            background-color: #f7f7f8;
+        }
+
+        /* 메시지 스타일 */
+        .message {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+        }
+
+        .message.user {
+            justify-content: flex-end; /* 사용자 메시지는 오른쪽 정렬 */
+        }
+
+        .message.llama {
+            justify-content: flex-start; /* LLaMA 메시지는 왼쪽 정렬 */
+        }
+
+        .message-bubble {
+            padding: 10px 15px;
+            border-radius: 20px;
+            max-width: 60%;
+            font-size: 14px;
+            word-wrap: break-word;
+            white-space: pre-wrap; /* 줄바꿈을 인식하도록 설정 */
+        }
+
+        .message.user .message-bubble {
+            background-color: #007bff; /* 사용자 메시지 - 파란색 */
+            color: white;
+        }
+
+        .message.llama .message-bubble {
+            background-color: #e4e6eb; /* LLaMA 메시지 - 회색 */
+            color: black;
+        }
+
+        /* 대기 애니메이션 스타일 */
+        .waiting-indicator {
+            display: flex;
+            align-items: center;
+            margin: 10px 0;
+        }
+
+        .waiting-indicator .dot {
+            height: 10px;
+            width: 10px;
+            margin: 0 3px;
+            border-radius: 50%;
+            background-color: #007bff;
+            animation: bounce 0.6s infinite alternate;
+        }
+
+        .waiting-indicator .dot:nth-child(2) {
+            animation-delay: 0.2s;
+        }
+
+        .waiting-indicator .dot:nth-child(3) {
+            animation-delay: 0.4s;
+        }
+
+        @keyframes bounce {
+            0% { transform: translateY(0); }
+            100% { transform: translateY(-10px); }
+        }
+
+        /* 입력 창과 버튼 */
+        .input-box {
+            display: flex;
+            align-items: center;
+            padding: 10px;
+            background-color: white;
+            border-top: 1px solid #ccc;
+        }
+
+        input[type="text"] {
+            flex: 1;
+            padding: 10px;
+            font-size: 16px;
+            border-radius: 20px;
+            border: 1px solid #ccc;
+            outline: none;
+            margin-right: 10px;
+        }
+
+        button {
+            padding: 10px 20px;
+            font-size: 16px;
+            background-color: #007bff;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            outline: none;
+        }
+
+        button:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <!-- 대화 내용 영역 -->
+    <div class="chat-container" id="chat-container"></div>
+
+    <!-- 입력창 및 전송 버튼 -->
+    <div class="input-box">
+        <input type="text" id="user_input" placeholder="Type your message here..." autocomplete="off" required>
+        <button id="send_button">Send</button>
+    </div>
+
+    <script src="https://cdn.socket.io/4.0.0/socket.io.min.js"></script>
+    <script>
+        const socket = io();
+        let currentMessage = ''; // 타이핑 중인 메시지를 임시로 저장
+        let llamaMessageDiv; // LLaMA 메시지 버블을 참조하기 위한 변수
+        let waitingIndicator; // 대기 애니메이션을 위한 변수
+
+        // 대화창 자동 스크롤
+        function scrollToBottom() {
+            const chatContainer = document.getElementById('chat-container');
+            chatContainer.scrollTop = chatContainer.scrollHeight;
+        }
+
+        // 새로운 메시지 버블 추가 함수
+        function addNewMessage(message, sender) {
+            const chatContainer = document.getElementById('chat-container');
+
+            // 메시지 버블 생성
+            const messageDiv = document.createElement('div');
+            messageDiv.classList.add('message', sender === 'You' ? 'user' : 'llama');
+            const messageBubble = document.createElement('div');
+            messageBubble.classList.add('message-bubble');
+            messageBubble.innerHTML = message.replace(/\n/g, '<br>'); // 줄바꿈을 HTML에서 인식하도록 변환
+
+            // 버블을 messageDiv에 추가하고 DOM에 삽입
+            messageDiv.appendChild(messageBubble);
+            chatContainer.appendChild(messageDiv);
+
+            // LLaMA 메시지 버블 참조 저장
+            if (sender === 'LLaMA') {
+                llamaMessageDiv = messageDiv; // LLaMA 메시지 버블 참조
+            }
+
+            scrollToBottom();
+        }
+
+        // 대기 애니메이션 추가
+        function showWaitingIndicator() {
+            waitingIndicator = document.createElement('div');
+            waitingIndicator.classList.add('waiting-indicator');
+            waitingIndicator.innerHTML = `
+                <span>대기 중...</span>
+                <div class="dot"></div>
+                <div class="dot"></div>
+                <div class="dot"></div>
+            `;
+            document.getElementById('chat-container').appendChild(waitingIndicator);
+            scrollToBottom();
+        }
+
+        // 대기 애니메이션 제거
+        function hideWaitingIndicator() {
+            if (waitingIndicator) {
+                waitingIndicator.remove();
+                waitingIndicator = null;
+            }
+        }
+
+        // 서버에서 메시지 수신
+        socket.on('server_message', function(data) {
+            if (data.sender !== 'You') {
+                addNewMessage(data.message, data.sender); // 사용자 메시지 추가
+            }
+        });
+
+        // 서버에서 한 글자씩 수신 (타이핑 효과)
+        socket.on('server_typing', function(data) {
+            appendCharToMessage(data.message, 'LLaMA');
+        });
+
+        // 한 글자씩 메시지에 추가 (타이핑 효과)
+        function appendCharToMessage(char, sender) {
+            if (sender === 'LLaMA') {
+                // 첫 글자가 수신되면 대기 애니메이션 제거
+                if (llamaMessageDiv === null) {
+                    hideWaitingIndicator(); // 대기 애니메이션 제거
+                    addNewMessage('', 'LLaMA'); // 새로운 메시지 버블 생성
+                }
+
+                // 현재 메시지를 누적하여 표시
+                currentMessage += char;
+                llamaMessageDiv.querySelector('.message-bubble').innerHTML = currentMessage.replace(/\n/g, '<br>'); // 줄바꿈 반영
+                scrollToBottom();
+            }
+        }
+
+
+        // 엔터키 입력 감지 및 메시지 전송
+        document.getElementById('user_input').addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                sendMessage();
+            }
+        });
+
+        // 사용자 입력 전송
+        function sendMessage() {
+            const userInput = document.getElementById('user_input');
+            const message = userInput.value.trim();
+            if (message) {
+                // 사용자 메시지를 화면에 추가
+                addNewMessage(message, 'You');
+
+                // 서버로 메시지 전송
+                socket.emit('user_message', { message: message });
+
+                // 사용자 입력창 초기화
+                userInput.value = '';
+                currentMessage = ''; // LLaMA 응답을 위한 참조 초기화
+                llamaMessageDiv = null; // LLaMA 메시지 버블 참조 초기화
+                showWaitingIndicator(); // 대기 애니메이션 표시
+            }
+        }
+
+        // 서버에서 LLaMA의 응답이 시작될 때 대기 애니메이션 제거
+        socket.on('server_typing_end', function() {
+            hideWaitingIndicator(); // 대기 애니메이션 제거
+        });
+
+        // 버튼 클릭 시 메시지 전송
+        document.getElementById('send_button').addEventListener('click', sendMessage);
+    </script>
+</body>
+</html>
